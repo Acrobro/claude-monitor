@@ -4,10 +4,15 @@ A small always-on-top indicator for Windows that shows, at a glance, which of
 your Claude Code conversations are **working** and which are **done and waiting
 for you** — so you stop alt-tabbing between terminals to check.
 
-![states](docs/states.png)
+Most of the time it's just this — one dot per session, tucked in the corner,
+with a green ring when something wants you:
 
-Collapsed it's a pill with one dot per session. Hover to expand the list, click
-a row to jump straight to that conversation's window.
+![the collapsed pill](docs/pill.png)
+
+Hover to expand it into the full list, and click a row to jump straight to that
+conversation's window:
+
+![the expanded panel](docs/states.png)
 
 ## Install
 
