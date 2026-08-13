@@ -35,7 +35,10 @@ POLL_MS = 1000          # how often we rescan
 DRAG_SLOP = 8           # px of movement before a click counts as a drag
 ZOOM_MIN, ZOOM_MAX = 0.7, 2.5
 WIDTH_MIN, WIDTH_MAX = 240, 620     # logical px, before DPI and zoom
-EDGE_GRIP = 6           # width of the drag-to-resize strip on the left edge
+ROW_MIN, ROW_MAX = 34, 84
+EDGE_GRIP = 7           # thickness of the drag-to-resize strips
+CORNER_GRIP = 16        # size of the diagonal grip in the bottom-left corner
+HOVER_MARGIN = 70       # stay open while the pointer is this close by
 WAITING_AFTER = 180     # seconds blocked on a tool before we suspect a prompt
 TAIL_SMALL = 256 * 1024
 TAIL_BIG = 4 * 1024 * 1024
@@ -558,7 +561,7 @@ def fmt_age(sec):
 # ---------------------------------------------------------------- config
 def load_config():
     cfg = {"rx": None, "y": 0, "pinned": False, "sound": True,
-           "show_detached": False, "zoom": 1.0, "panel_w": 330}
+           "show_detached": False, "zoom": 1.0, "panel_w": 330, "row_h": 46}
     try:
         # utf-8-sig: tolerate a BOM, which several Windows editors (and
         # PowerShell's Set-Content) add. Without it the whole config is
@@ -613,6 +616,7 @@ def run_gui():
     cfg = load_config()
     cfg["zoom"] = min(max(float(cfg.get("zoom", 1.0)), ZOOM_MIN), ZOOM_MAX)
     cfg["panel_w"] = min(max(int(cfg.get("panel_w", 330)), WIDTH_MIN), WIDTH_MAX)
+    cfg["row_h"] = min(max(int(cfg.get("row_h", 46)), ROW_MIN), ROW_MAX)
 
     def s(v):
         """Logical px -> device px, honouring both display DPI and user zoom."""
@@ -629,7 +633,7 @@ def run_gui():
         F_BODY = ("Segoe UI", -s(10))
         F_SMALL = ("Segoe UI", -s(9))
         PILL_H = s(34)
-        ROW_H = s(46)
+        ROW_H = s(cfg["row_h"])
         HEAD_H = s(30)
         PANEL_W = s(cfg["panel_w"])
         PAD = s(10)
@@ -655,7 +659,7 @@ def run_gui():
         "show_detached": bool(cfg.get("show_detached", False)),
         "hover_row": -1,
         "hover_close": False,
-        "hover_edge": False,
+        "hover_edge": None,
         "close_hit": None,
         "prev": {},             # session id -> last seen state
         "ack": {},              # session id -> mtime of the turn you've looked at
@@ -799,13 +803,23 @@ def run_gui():
 
         canvas.create_line(PAD, HEAD_H, w - PAD, HEAD_H, fill=BORDER)
 
-        # left-edge resize grip, shown only while the pointer is on it
-        if state["hover_edge"] or state["resize"]:
-            gy = h / 2
+        # resize grips, shown only for the handle under the pointer
+        grip = state["hover_edge"] or (state["resize"] or {}).get("grip")
+        pip = max(1, s(2))
+        if grip in ("width", "corner"):
             for dy in (-s(6), 0, s(6)):
-                canvas.create_line(s(3), gy + dy - s(2), s(3), gy + dy + s(2),
-                                   fill=ORANGE, width=max(1, s(2)),
-                                   capstyle="round")
+                canvas.create_line(s(3), h / 2 + dy - s(2),
+                                   s(3), h / 2 + dy + s(2),
+                                   fill=ORANGE, width=pip, capstyle="round")
+        if grip in ("height", "corner"):
+            for dx in (-s(6), 0, s(6)):
+                canvas.create_line(w / 2 + dx - s(2), h - s(3),
+                                   w / 2 + dx + s(2), h - s(3),
+                                   fill=ORANGE, width=pip, capstyle="round")
+        if grip == "corner":
+            for off in (s(4), s(8), s(12)):
+                canvas.create_line(s(3), h - off, off, h - s(3),
+                                   fill=ORANGE, width=pip, capstyle="round")
 
         state["row_hits"] = []
         if not sessions:
@@ -896,17 +910,35 @@ def run_gui():
             state["expanded"] = True
             render()
 
+    def pointer_near():
+        """Is the pointer inside the panel, or just outside it?
+
+        Collapsing the instant the pointer clears the edge makes the resize
+        grips almost impossible to grab, so allow a margin of slack.
+        """
+        px, py = win.winfo_pointerx(), win.winfo_pointery()
+        m = s(HOVER_MARGIN)
+        x0, y0 = state["left"], cfg["y"]
+        return (x0 - m <= px <= x0 + state["w"] + m
+                and y0 - m <= py <= y0 + state["h"] + m)
+
     def on_leave(_):
         if state["pinned"]:
             return
         cancel_collapse()
+        state["collapse_job"] = win.after(250, collapse_check)
 
-        def collapse():
-            state["collapse_job"] = None
-            state["expanded"] = False
-            state["hover_row"] = -1
-            render()
-        state["collapse_job"] = win.after(350, collapse)
+    def collapse_check():
+        state["collapse_job"] = None
+        # never fold up mid-drag, or while the pointer is still hovering nearby
+        if (state["pinned"] or state["drag"] or state["resize"]
+                or pointer_near()):
+            state["collapse_job"] = win.after(250, collapse_check)
+            return
+        state["expanded"] = False
+        state["hover_row"] = -1
+        state["hover_edge"] = None
+        render()
 
     def in_close(e):
         box = state["close_hit"]
@@ -924,7 +956,7 @@ def run_gui():
         edge = on_edge(e)
         if edge:
             hit = -1
-        canvas.config(cursor="sb_h_double_arrow" if edge else "")
+        set_cursor(edge)
         if (hit != state["hover_row"] or close != state["hover_close"]
                 or edge != state["hover_edge"]):
             state["hover_row"] = hit
@@ -933,8 +965,32 @@ def run_gui():
             render()
 
     def on_edge(e):
-        """True on the left-hand grip strip of the expanded panel."""
-        return state["expanded"] and e.x <= s(EDGE_GRIP)
+        """Which resize grip the pointer is over, if any.
+
+        The panel is anchored at its top-right corner, so it grows left and
+        down - which makes the left edge, the bottom edge and the bottom-left
+        corner the handles that feel natural.
+        """
+        if not state["expanded"]:
+            return None
+        left = e.x <= s(EDGE_GRIP)
+        bottom = e.y >= state["h"] - s(EDGE_GRIP)
+        if (e.x <= s(CORNER_GRIP)) and (e.y >= state["h"] - s(CORNER_GRIP)):
+            return "corner"
+        if left:
+            return "width"
+        if bottom:
+            return "height"
+        return None
+
+    CURSORS = {"width": "sb_h_double_arrow", "height": "sb_v_double_arrow",
+               "corner": "size_ne_sw"}
+
+    def set_cursor(name):
+        try:
+            canvas.config(cursor=CURSORS.get(name, ""))
+        except tk.TclError:
+            canvas.config(cursor="sizing" if name else "")
 
     def set_zoom(value):
         cfg["zoom"] = round(min(max(value, ZOOM_MIN), ZOOM_MAX), 3)
@@ -948,19 +1004,42 @@ def run_gui():
         return "break"
 
     def on_press(e):
-        if on_edge(e):
-            # drag the left edge; the right edge stays pinned where it is
-            state["resize"] = (e.x_root, cfg["panel_w"])
+        grip = on_edge(e)
+        if grip:
+            # the top-right corner is the anchor everything resizes away from
+            anchor = (cfg["rx"], cfg["y"])
+            reach = max(8.0, ((e.x_root - anchor[0]) ** 2
+                              + (e.y_root - anchor[1]) ** 2) ** 0.5)
+            state["resize"] = {
+                "grip": grip, "x": e.x_root, "y": e.y_root,
+                "w": cfg["panel_w"], "row": cfg["row_h"],
+                "zoom": cfg["zoom"], "reach": reach, "anchor": anchor,
+            }
             state["moved"] = True
             return
         state["drag"] = (e.x_root - state["left"], e.y_root - cfg["y"])
         state["moved"] = False
 
     def on_drag(e):
-        if state["resize"]:
-            start_x, start_w = state["resize"]
-            grown = (start_x - e.x_root) / (DPI_SCALE * cfg["zoom"])
-            cfg["panel_w"] = int(min(max(start_w + grown, WIDTH_MIN), WIDTH_MAX))
+        r = state["resize"]
+        if r:
+            unit = DPI_SCALE * cfg["zoom"]
+            if r["grip"] == "corner":
+                # proportional: scale by how much further the pointer is from
+                # the anchor than when the drag started
+                ax, ay = r["anchor"]
+                now = max(8.0, ((e.x_root - ax) ** 2 + (e.y_root - ay) ** 2) ** 0.5)
+                cfg["zoom"] = round(min(max(r["zoom"] * now / r["reach"],
+                                            ZOOM_MIN), ZOOM_MAX), 3)
+            elif r["grip"] == "width":
+                grown = (r["x"] - e.x_root) / unit
+                cfg["panel_w"] = int(min(max(r["w"] + grown,
+                                             WIDTH_MIN), WIDTH_MAX))
+            else:
+                # spread the height change across the rows that make it up
+                rows = max(1, len(state["sessions"]))
+                grown = (e.y_root - r["y"]) / unit / rows
+                cfg["row_h"] = int(min(max(r["row"] + grown, ROW_MIN), ROW_MAX))
             remetric()
             render()
             return
@@ -1030,8 +1109,8 @@ def run_gui():
         render()
         save_config(cfg)
 
-    def reset_width():
-        cfg["panel_w"] = 330
+    def reset_size():
+        cfg["panel_w"], cfg["row_h"], cfg["zoom"] = 330, 46, 1.0
         remetric()
         render()
         save_config(cfg)
@@ -1063,7 +1142,7 @@ def run_gui():
             size.add_command(label="%s%d%%" % (mark, pct),
                              command=lambda p=pct: set_zoom(p / 100.0))
         size.add_separator()
-        size.add_command(label="   Reset width", command=reset_width)
+        size.add_command(label="   Reset size", command=reset_size)
         menu.add_cascade(label="   Size", menu=size)
 
         menu.add_separator()
