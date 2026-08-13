@@ -67,15 +67,17 @@ Rows are ordered by most recent activity, so whatever just moved is on top.
   window and mark it seen.
 - **×** in the panel header — quit.
 - **Drag** — move it; the position is remembered.
-- **Resize from three grips.** The panel is anchored to its top-right corner,
-  so it grows left and down:
-  - **left edge** — width. Longer titles fill the extra room rather than
-    staying cut off.
-  - **bottom edge** — row height, for roomier rows.
-  - **bottom-left corner** — both at once, proportionally.
+- **Resize from any edge or corner.** Whichever side you grab, the opposite
+  one stays pinned:
+  - **left / right edge** — width. Longer titles fill the extra room rather
+    than staying cut off.
+  - **top / bottom edge** — row height, for roomier rows.
+  - **any corner** — both at once, proportionally.
 
-  A grip lights up when you're on it, and the panel stays open while the
-  pointer is anywhere near it, so it won't fold away mid-drag.
+  The only exception is the top-right corner, which belongs to the quit
+  button. A grip lights up when you're on it and the cursor changes to show
+  which way it'll go; the panel stays open while the pointer is anywhere near
+  it, so it won't fold away mid-drag.
 - **Ctrl + scroll wheel** — scale the whole thing, 70% to 250%. Also under
   right-click → *Size*, with presets and *Reset size*.
 - **Right-click** — keep expanded, chime on completion, include detached

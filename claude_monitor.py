@@ -36,8 +36,8 @@ DRAG_SLOP = 8           # px of movement before a click counts as a drag
 ZOOM_MIN, ZOOM_MAX = 0.7, 2.5
 WIDTH_MIN, WIDTH_MAX = 240, 620     # logical px, before DPI and zoom
 ROW_MIN, ROW_MAX = 34, 84
-EDGE_GRIP = 7           # thickness of the drag-to-resize strips
-CORNER_GRIP = 16        # size of the diagonal grip in the bottom-left corner
+EDGE_GRIP = 10          # thickness of the drag-to-resize strips
+CORNER_GRIP = 20        # reach of the diagonal grips at each corner
 HOVER_MARGIN = 70       # stay open while the pointer is this close by
 WAITING_AFTER = 180     # seconds blocked on a tool before we suspect a prompt
 TAIL_SMALL = 256 * 1024
@@ -804,22 +804,32 @@ def run_gui():
         canvas.create_line(PAD, HEAD_H, w - PAD, HEAD_H, fill=BORDER)
 
         # resize grips, shown only for the handle under the pointer
-        grip = state["hover_edge"] or (state["resize"] or {}).get("grip")
-        pip = max(1, s(2))
-        if grip in ("width", "corner"):
-            for dy in (-s(6), 0, s(6)):
-                canvas.create_line(s(3), h / 2 + dy - s(2),
-                                   s(3), h / 2 + dy + s(2),
-                                   fill=ORANGE, width=pip, capstyle="round")
-        if grip in ("height", "corner"):
-            for dx in (-s(6), 0, s(6)):
-                canvas.create_line(w / 2 + dx - s(2), h - s(3),
-                                   w / 2 + dx + s(2), h - s(3),
-                                   fill=ORANGE, width=pip, capstyle="round")
-        if grip == "corner":
-            for off in (s(4), s(8), s(12)):
-                canvas.create_line(s(3), h - off, off, h - s(3),
-                                   fill=ORANGE, width=pip, capstyle="round")
+        grip = state["hover_edge"]
+        if not grip and state["resize"]:
+            grip = (state["resize"]["gx"], state["resize"]["gy"])
+        if grip:
+            gx, gy = grip
+            pip, inset = max(1, s(2)), s(3)
+            if gx:
+                px = inset if gx == "left" else w - inset
+                for dy in (-s(6), 0, s(6)):
+                    canvas.create_line(px, h / 2 + dy - s(2),
+                                       px, h / 2 + dy + s(2),
+                                       fill=ORANGE, width=pip, capstyle="round")
+            if gy:
+                py = inset if gy == "top" else h - inset
+                for dx in (-s(6), 0, s(6)):
+                    canvas.create_line(w / 2 + dx - s(2), py,
+                                       w / 2 + dx + s(2), py,
+                                       fill=ORANGE, width=pip, capstyle="round")
+            if gx and gy:
+                cx = inset if gx == "left" else w - inset
+                cy = inset if gy == "top" else h - inset
+                sx = 1 if gx == "left" else -1
+                sy = 1 if gy == "top" else -1
+                for off in (s(5), s(10), s(15)):
+                    canvas.create_line(cx, cy + sy * off, cx + sx * off, cy,
+                                       fill=ORANGE, width=pip, capstyle="round")
 
         state["row_hits"] = []
         if not sessions:
@@ -965,32 +975,42 @@ def run_gui():
             render()
 
     def on_edge(e):
-        """Which resize grip the pointer is over, if any.
+        """Which resize grip the pointer is over, as (x-side, y-side).
 
-        The panel is anchored at its top-right corner, so it grows left and
-        down - which makes the left edge, the bottom edge and the bottom-left
-        corner the handles that feel natural.
+        Every edge and corner resizes; whichever side you grab, the opposite
+        one stays put. The quit button wins over the corner it shares.
         """
-        if not state["expanded"]:
+        if not state["expanded"] or in_close(e):
             return None
-        left = e.x <= s(EDGE_GRIP)
-        bottom = e.y >= state["h"] - s(EDGE_GRIP)
-        if (e.x <= s(CORNER_GRIP)) and (e.y >= state["h"] - s(CORNER_GRIP)):
-            return "corner"
-        if left:
-            return "width"
-        if bottom:
-            return "height"
-        return None
+        w, h = state["w"], state["h"]
+        edge, corner = s(EDGE_GRIP), s(CORNER_GRIP)
 
-    CURSORS = {"width": "sb_h_double_arrow", "height": "sb_v_double_arrow",
-               "corner": "size_ne_sw"}
+        gx = "left" if e.x <= edge else ("right" if e.x >= w - edge else None)
+        gy = "top" if e.y <= edge else ("bottom" if e.y >= h - edge else None)
 
-    def set_cursor(name):
+        # near a corner, grab both axes even if only one strip is under us
+        near_x = "left" if e.x <= corner else ("right" if e.x >= w - corner else None)
+        near_y = "top" if e.y <= corner else ("bottom" if e.y >= h - corner else None)
+        if gx and near_y:
+            gy = near_y
+        if gy and near_x:
+            gx = near_x
+
+        return (gx, gy) if (gx or gy) else None
+
+    def set_cursor(grip):
+        if not grip:
+            canvas.config(cursor="")
+            return
+        gx, gy = grip
+        if gx and gy:
+            name = "size_nw_se" if (gx == "left") == (gy == "top") else "size_ne_sw"
+        else:
+            name = "sb_h_double_arrow" if gx else "sb_v_double_arrow"
         try:
-            canvas.config(cursor=CURSORS.get(name, ""))
+            canvas.config(cursor=name)
         except tk.TclError:
-            canvas.config(cursor="sizing" if name else "")
+            canvas.config(cursor="sizing")
 
     def set_zoom(value):
         cfg["zoom"] = round(min(max(value, ZOOM_MIN), ZOOM_MAX), 3)
@@ -1003,17 +1023,24 @@ def run_gui():
         set_zoom(cfg["zoom"] * (1.1 if e.delta > 0 else 1 / 1.1))
         return "break"
 
+    def panel_height():
+        rows = max(1, len(state["sessions"]))
+        return HEAD_H + rows * ROW_H + s(8)
+
     def on_press(e):
         grip = on_edge(e)
         if grip:
-            # the top-right corner is the anchor everything resizes away from
-            anchor = (cfg["rx"], cfg["y"])
-            reach = max(8.0, ((e.x_root - anchor[0]) ** 2
-                              + (e.y_root - anchor[1]) ** 2) ** 0.5)
+            gx, gy = grip
+            left, top = state["left"], cfg["y"]
+            right, bottom = left + state["w"], top + state["h"]
+            # pin the side opposite the one being dragged
+            ax = right if gx == "left" else left
+            ay = bottom if gy == "top" else top
             state["resize"] = {
-                "grip": grip, "x": e.x_root, "y": e.y_root,
-                "w": cfg["panel_w"], "row": cfg["row_h"],
-                "zoom": cfg["zoom"], "reach": reach, "anchor": anchor,
+                "gx": gx, "gy": gy, "ax": ax, "ay": ay,
+                "w": cfg["panel_w"], "row": cfg["row_h"], "zoom": cfg["zoom"],
+                "reach": max(8.0, ((e.x_root - ax) ** 2
+                                   + (e.y_root - ay) ** 2) ** 0.5),
             }
             state["moved"] = True
             return
@@ -1023,24 +1050,30 @@ def run_gui():
     def on_drag(e):
         r = state["resize"]
         if r:
-            unit = DPI_SCALE * cfg["zoom"]
-            if r["grip"] == "corner":
-                # proportional: scale by how much further the pointer is from
-                # the anchor than when the drag started
-                ax, ay = r["anchor"]
+            gx, gy, ax, ay = r["gx"], r["gy"], r["ax"], r["ay"]
+            rows = max(1, len(state["sessions"]))
+
+            if gx and gy:
+                # corner: scale everything by how much further the pointer has
+                # moved from the pinned corner
                 now = max(8.0, ((e.x_root - ax) ** 2 + (e.y_root - ay) ** 2) ** 0.5)
                 cfg["zoom"] = round(min(max(r["zoom"] * now / r["reach"],
                                             ZOOM_MIN), ZOOM_MAX), 3)
-            elif r["grip"] == "width":
-                grown = (r["x"] - e.x_root) / unit
-                cfg["panel_w"] = int(min(max(r["w"] + grown,
-                                             WIDTH_MIN), WIDTH_MAX))
+            elif gx:
+                want = abs(e.x_root - ax) / (DPI_SCALE * cfg["zoom"])
+                cfg["panel_w"] = int(min(max(want, WIDTH_MIN), WIDTH_MAX))
             else:
-                # spread the height change across the rows that make it up
-                rows = max(1, len(state["sessions"]))
-                grown = (e.y_root - r["y"]) / unit / rows
-                cfg["row_h"] = int(min(max(r["row"] + grown, ROW_MIN), ROW_MAX))
+                want = (abs(e.y_root - ay) - HEAD_H - s(8)) / rows
+                cfg["row_h"] = int(min(max(want / (DPI_SCALE * cfg["zoom"]),
+                                           ROW_MIN), ROW_MAX))
             remetric()
+
+            # put the pinned side back exactly where it was
+            w, h = PANEL_W, panel_height()
+            if gx:
+                cfg["rx"] = ax if gx == "left" else ax + w
+            if gy:
+                cfg["y"] = ay - h if gy == "top" else ay
             render()
             return
         if not state["drag"]:
