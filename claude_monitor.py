@@ -73,9 +73,6 @@ SUMMARY_LABEL = {
     "done": "done", "waiting": "check", "working": "working",
     "thinking": "thinking", "seen": "seen", "starting": "starting",
 }
-# most-urgent first
-RANK = {"done": 0, "waiting": 1, "working": 2, "thinking": 3,
-        "starting": 4, "seen": 5}
 
 # ---------------------------------------------------------------- win32
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -240,7 +237,13 @@ def claim_single_instance():
     return ctypes.get_last_error() != 183       # ERROR_ALREADY_EXISTS
 
 
+def foreground_window():
+    return u32.GetForegroundWindow()
+
+
 def window_title(hwnd):
+    if not hwnd:
+        return ""
     n = u32.GetWindowTextLengthW(hwnd)
     buf = ctypes.create_unicode_buffer(n + 1)
     u32.GetWindowTextW(hwnd, buf, n + 1)
@@ -494,8 +497,33 @@ def scan(include_detached=False):
         out.append(item)
 
     assign_windows(out)
-    out.sort(key=lambda s: (RANK.get(s["state"], 9), s["name"]))
+    out.sort(key=recency, reverse=True)
     return out
+
+
+def recency(sess):
+    """Most recent real activity, for ordering the list."""
+    return sess["event"] or sess["mtime"] or 0.0
+
+
+def looking_at(sessions, fg=None, title=None):
+    """Which sessions the focused window means you are currently looking at.
+
+    Several sessions can share one terminal window, so focus alone isn't
+    enough - the window title says which tab is on top, and that's the one
+    you're looking at. When the title names none of them, only a window
+    hosting a single session can be attributed confidently.
+    """
+    fg = foreground_window() if fg is None else fg
+    if not fg:
+        return []
+    here = [s for s in sessions if s["hwnd"] and s["hwnd"] == fg]
+    if len(here) <= 1:
+        return here
+
+    title = window_title(fg) if title is None else title
+    ranked = sorted(here, key=lambda s: window_score(s, title), reverse=True)
+    return ranked[:1] if window_score(ranked[0], title) > 0 else []
 
 
 def ack_key(sess):
@@ -955,6 +983,11 @@ def run_gui():
             sessions = scan(include_detached=state["show_detached"])
         except Exception:
             sessions = state["sessions"]
+        # looking at a session's window counts as looking at the session,
+        # however you got there - so clear it without needing the widget
+        for sess in looking_at(sessions):
+            state["ack"][sess["session_id"]] = ack_key(sess)
+
         live = set()
         for sess in sessions:
             sid = sess["session_id"]
@@ -969,7 +1002,9 @@ def run_gui():
             sess["ui"] = "seen" if (sess["state"] == "done" and acked) else sess["state"]
 
             was = state["prev"].get(sid)
-            if was and was != "done" and sess["state"] == "done" and state["sound"]:
+            if (was and was != "done" and sess["state"] == "done"
+                    and not acked and state["sound"]):
+                # no chime if you were already watching it finish
                 try:
                     winsound.MessageBeep(0x00000040)   # asterisk
                 except Exception:
@@ -981,7 +1016,7 @@ def run_gui():
                 if sid not in live:
                     del d[sid]
 
-        sessions.sort(key=lambda x: (RANK.get(x["ui"], 9), x["name"]))
+        sessions.sort(key=recency, reverse=True)
         state["sessions"] = sessions
         state["first"] = False
 

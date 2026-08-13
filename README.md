@@ -47,9 +47,14 @@ harmless — a second copy detects the first and exits.
 Violet and blue both mean busy; the split tells you *why*, which is the
 difference between "composing an answer" and "three minutes into a test run".
 
-Green is the only state that nags. Click a row (or *Mark all as seen*) and it
-goes grey until that session works again. Sessions that finished before the
-monitor started come up grey, so launching it doesn't drown you in green.
+Green is the only state that nags, and it clears as soon as you've actually
+looked — whether you clicked the row, used *Mark all as seen*, or just
+alt-tabbed to that window yourself. Focusing a window counts as reading it, so
+the widget never nags about something already on your screen (and won't chime
+for a session you watched finish). Sessions that finished before the monitor
+started come up grey, so launching it doesn't drown you in green.
+
+Rows are ordered by most recent activity, so whatever just moved is on top.
 
 ## Controls
 
@@ -74,6 +79,10 @@ Windows Terminal is a single process hosting every terminal window, so windows
 are matched to sessions by title (Claude Code puts the conversation title in
 the terminal title). Without that, every session in Windows Terminal would
 focus the same window.
+
+That title match is also how "you've already looked at it" works when two
+sessions share one terminal: the title tells us which tab is on top. If it
+names neither, nothing is cleared rather than guessing wrong.
 
 ## How it works
 
