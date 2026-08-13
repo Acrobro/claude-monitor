@@ -33,6 +33,9 @@ CONFIG_PATH = os.path.join(HOME, ".claude-monitor.json")
 
 POLL_MS = 1000          # how often we rescan
 DRAG_SLOP = 8           # px of movement before a click counts as a drag
+ZOOM_MIN, ZOOM_MAX = 0.7, 2.5
+WIDTH_MIN, WIDTH_MAX = 240, 620     # logical px, before DPI and zoom
+EDGE_GRIP = 6           # width of the drag-to-resize strip on the left edge
 WAITING_AFTER = 180     # seconds blocked on a tool before we suspect a prompt
 TAIL_SMALL = 256 * 1024
 TAIL_BIG = 4 * 1024 * 1024
@@ -555,7 +558,7 @@ def fmt_age(sec):
 # ---------------------------------------------------------------- config
 def load_config():
     cfg = {"rx": None, "y": 0, "pinned": False, "sound": True,
-           "show_detached": False}
+           "show_detached": False, "zoom": 1.0, "panel_w": 330}
     try:
         # utf-8-sig: tolerate a BOM, which several Windows editors (and
         # PowerShell's Set-Content) add. Without it the whole config is
@@ -595,6 +598,7 @@ def probe():
 # ---------------------------------------------------------------- UI
 def run_gui():
     import tkinter as tk
+    from tkinter import font as tkfont
     import winsound
 
     try:
@@ -605,22 +609,32 @@ def run_gui():
         dpi = ctypes.windll.user32.GetDpiForSystem()
     except Exception:
         dpi = 96
-    SCALE = dpi / 96.0
+    DPI_SCALE = dpi / 96.0
+    cfg = load_config()
+    cfg["zoom"] = min(max(float(cfg.get("zoom", 1.0)), ZOOM_MIN), ZOOM_MAX)
+    cfg["panel_w"] = min(max(int(cfg.get("panel_w", 330)), WIDTH_MIN), WIDTH_MAX)
 
     def s(v):
-        return int(round(v * SCALE))
+        """Logical px -> device px, honouring both display DPI and user zoom."""
+        return int(round(v * DPI_SCALE * cfg["zoom"]))
 
-    F_TITLE = ("Segoe UI Semibold", -s(12))
-    F_BODY = ("Segoe UI", -s(10))
-    F_SMALL = ("Segoe UI", -s(9))
+    # Recomputed whenever zoom or width changes, so every call site below can
+    # keep using plain names.
+    F_TITLE = F_BODY = F_SMALL = None
+    PILL_H = ROW_H = HEAD_H = PANEL_W = PAD = 0
 
-    PILL_H = s(34)
-    ROW_H = s(46)
-    HEAD_H = s(30)
-    PANEL_W = s(330)
-    PAD = s(10)
+    def remetric():
+        nonlocal F_TITLE, F_BODY, F_SMALL, PILL_H, ROW_H, HEAD_H, PANEL_W, PAD
+        F_TITLE = ("Segoe UI Semibold", -s(12))
+        F_BODY = ("Segoe UI", -s(10))
+        F_SMALL = ("Segoe UI", -s(9))
+        PILL_H = s(34)
+        ROW_H = s(46)
+        HEAD_H = s(30)
+        PANEL_W = s(cfg["panel_w"])
+        PAD = s(10)
 
-    cfg = load_config()
+    remetric()
 
     root = tk.Tk()
     root.withdraw()
@@ -641,12 +655,14 @@ def run_gui():
         "show_detached": bool(cfg.get("show_detached", False)),
         "hover_row": -1,
         "hover_close": False,
+        "hover_edge": False,
         "close_hit": None,
         "prev": {},             # session id -> last seen state
         "ack": {},              # session id -> mtime of the turn you've looked at
         "first": True,
         "flash_until": 0.0,
         "drag": None,
+        "resize": None,
         "moved": False,
         "collapse_job": None,
         "row_hits": [],
@@ -763,8 +779,10 @@ def run_gui():
             for k in ("done", "waiting", "working", "thinking", "seen",
                       "starting")
             if counts.get(k))
+        head_used = s(32) + measure("Claude Code", F_TITLE) + s(10)
         canvas.create_text(w - s(30), HEAD_H / 2 + s(2), anchor="e",
-                           text=summary or "no sessions",
+                           text=fit(summary or "no sessions", F_SMALL,
+                                    w - s(30) - head_used),
                            fill=FG_DIM, font=F_SMALL)
 
         # quit button
@@ -780,6 +798,14 @@ def run_gui():
         state["close_hit"] = (w - s(28), 0, w, HEAD_H)
 
         canvas.create_line(PAD, HEAD_H, w - PAD, HEAD_H, fill=BORDER)
+
+        # left-edge resize grip, shown only while the pointer is on it
+        if state["hover_edge"] or state["resize"]:
+            gy = h / 2
+            for dy in (-s(6), 0, s(6)):
+                canvas.create_line(s(3), gy + dy - s(2), s(3), gy + dy + s(2),
+                                   fill=ORANGE, width=max(1, s(2)),
+                                   capstyle="round")
 
         state["row_hits"] = []
         if not sessions:
@@ -808,29 +834,55 @@ def run_gui():
 
             title = sess["title"] or sess["name"]
             canvas.create_text(s(26), y + s(13), anchor="w",
-                               text=clip(title, 34), fill=FG, font=F_TITLE)
+                               text=fit(title, F_TITLE, w - s(38)),
+                               fill=FG, font=F_TITLE)
+
+            # the folder tag is laid out first so the status line knows how
+            # much room is genuinely left beside it
+            tag = sess["folder"]
+            if sess["kind"] == "bg":
+                tag = "bg · " + tag
+            tag = fit(tag, F_SMALL, int(w * 0.34))
+            canvas.create_text(w - s(12), y + s(30), anchor="e",
+                               text=tag, fill=FG_DIM, font=F_SMALL)
 
             label = STATE_LABEL.get(ui, ui)
             if ui == "working" and sess["tool"]:
                 label = "running %s" % sess["tool"]
             line = "%s · %s ago" % (label, fmt_age(sess["since"]))
             canvas.create_text(s(26), y + s(30), anchor="w",
-                               text=clip(line, 34),
+                               text=fit(line, F_SMALL,
+                                        w - s(46) - measure(tag, F_SMALL)),
                                fill=colour if ui in ("done", "waiting") else FG_DIM,
                                font=F_SMALL)
-
-            tag = sess["folder"]
-            if sess["kind"] == "bg":
-                tag = "bg · " + tag
-            canvas.create_text(w - s(12), y + s(30), anchor="e",
-                               text=clip(tag, 20), fill=FG_DIM, font=F_SMALL)
 
             state["row_hits"].append((y, y + ROW_H, sess))
             y += ROW_H
 
-    def clip(text, n):
+    _fonts = {}
+
+    def measure(text, font):
+        f = _fonts.get(font)
+        if f is None:
+            f = _fonts[font] = tkfont.Font(font=font)
+        return f.measure(text)
+
+    def fit(text, font, max_px):
+        """Trim to the space actually available, so widening the panel shows
+        more text rather than the same fixed number of characters."""
         text = " ".join(str(text).split())
-        return text if len(text) <= n else text[:n - 1] + "…"
+        if max_px <= 0:
+            return ""
+        if measure(text, font) <= max_px:
+            return text
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if measure(text[:mid] + "…", font) <= max_px:
+                lo = mid
+            else:
+                hi = mid - 1
+        return text[:lo] + "…" if lo else ""
 
     # ---- interaction -----------------------------------------------------
     def cancel_collapse():
@@ -869,16 +921,49 @@ def run_gui():
                 hit = i
                 break
         close = in_close(e)
-        if hit != state["hover_row"] or close != state["hover_close"]:
+        edge = on_edge(e)
+        if edge:
+            hit = -1
+        canvas.config(cursor="sb_h_double_arrow" if edge else "")
+        if (hit != state["hover_row"] or close != state["hover_close"]
+                or edge != state["hover_edge"]):
             state["hover_row"] = hit
             state["hover_close"] = close
+            state["hover_edge"] = edge
             render()
 
+    def on_edge(e):
+        """True on the left-hand grip strip of the expanded panel."""
+        return state["expanded"] and e.x <= s(EDGE_GRIP)
+
+    def set_zoom(value):
+        cfg["zoom"] = round(min(max(value, ZOOM_MIN), ZOOM_MAX), 3)
+        remetric()
+        render()
+        save_config(cfg)
+
+    def on_wheel(e):
+        # ctrl+wheel is the usual "make it bigger" gesture
+        set_zoom(cfg["zoom"] * (1.1 if e.delta > 0 else 1 / 1.1))
+        return "break"
+
     def on_press(e):
+        if on_edge(e):
+            # drag the left edge; the right edge stays pinned where it is
+            state["resize"] = (e.x_root, cfg["panel_w"])
+            state["moved"] = True
+            return
         state["drag"] = (e.x_root - state["left"], e.y_root - cfg["y"])
         state["moved"] = False
 
     def on_drag(e):
+        if state["resize"]:
+            start_x, start_w = state["resize"]
+            grown = (start_x - e.x_root) / (DPI_SCALE * cfg["zoom"])
+            cfg["panel_w"] = int(min(max(start_w + grown, WIDTH_MIN), WIDTH_MAX))
+            remetric()
+            render()
+            return
         if not state["drag"]:
             return
         dx, dy = state["drag"]
@@ -895,9 +980,11 @@ def run_gui():
 
     def on_release(e):
         was_drag = state["moved"]
+        resizing = state["resize"]
         state["drag"] = None
+        state["resize"] = None
         state["moved"] = False
-        if was_drag:
+        if was_drag or resizing:
             save_config(cfg)
             return
         if not state["expanded"]:
@@ -943,6 +1030,12 @@ def run_gui():
         render()
         save_config(cfg)
 
+    def reset_width():
+        cfg["panel_w"] = 330
+        remetric()
+        render()
+        save_config(cfg)
+
     def ack_all():
         for sess in state["sessions"]:
             state["ack"][sess["session_id"]] = ack_key(sess)
@@ -962,6 +1055,17 @@ def run_gui():
             label=("✓ " if state["show_detached"] else "   ")
                   + "Include detached background jobs",
             command=toggle_detached)
+        size = tk.Menu(menu, tearoff=0, bg=BG, fg=FG,
+                       activebackground=ORANGE, activeforeground="#FFFFFF",
+                       borderwidth=0)
+        for pct in (80, 100, 125, 150, 200):
+            mark = "✓ " if abs(cfg["zoom"] * 100 - pct) < 1 else "   "
+            size.add_command(label="%s%d%%" % (mark, pct),
+                             command=lambda p=pct: set_zoom(p / 100.0))
+        size.add_separator()
+        size.add_command(label="   Reset width", command=reset_width)
+        menu.add_cascade(label="   Size", menu=size)
+
         menu.add_separator()
         menu.add_command(label="   Mark all as seen", command=ack_all)
         menu.add_command(label="   Reset position", command=reset_pos)
@@ -976,6 +1080,7 @@ def run_gui():
         widget.bind("<B1-Motion>", on_drag)
         widget.bind("<ButtonRelease-1>", on_release)
         widget.bind("<Button-3>", on_menu)
+        widget.bind("<Control-MouseWheel>", on_wheel)
 
     # ---- poll ------------------------------------------------------------
     def tick():

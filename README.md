@@ -67,10 +67,15 @@ Rows are ordered by most recent activity, so whatever just moved is on top.
   window and mark it seen.
 - **×** in the panel header — quit.
 - **Drag** — move it; the position is remembered.
+- **Drag the panel's left edge** — make it wider or narrower. The right edge
+  stays put, and longer titles fill the extra room rather than staying cut off.
+- **Ctrl + scroll wheel** — scale the whole thing, 70% to 250%. Also under
+  right-click → *Size*, with presets and *Reset width*.
 - **Right-click** — keep expanded, chime on completion, include detached
   background jobs, mark all seen, reset position, quit.
 
-Settings are stored in `~/.claude-monitor.json`.
+Everything is remembered in `~/.claude-monitor.json`, and sizing stacks on top
+of your display's DPI scaling rather than replacing it.
 
 ## Which sessions show up
 
