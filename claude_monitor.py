@@ -560,7 +560,7 @@ def fmt_age(sec):
 
 # ---------------------------------------------------------------- config
 def load_config():
-    cfg = {"rx": None, "y": 0, "pinned": False, "sound": True,
+    cfg = {"rx": None, "y": 0, "pinned": False,
            "show_detached": False, "zoom": 1.0, "panel_w": 330, "row_h": 46}
     try:
         # utf-8-sig: tolerate a BOM, which several Windows editors (and
@@ -602,7 +602,6 @@ def probe():
 def run_gui():
     import tkinter as tk
     from tkinter import font as tkfont
-    import winsound
 
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
@@ -655,14 +654,12 @@ def run_gui():
         "sessions": [],
         "expanded": False,
         "pinned": bool(cfg.get("pinned")),
-        "sound": bool(cfg.get("sound", True)),
         "show_detached": bool(cfg.get("show_detached", False)),
         "hover_row": -1,
         "hover_close": False,
         "hover_edge": None,
         "close_hit": None,
-        "prev": {},             # session id -> last seen state
-        "ack": {},              # session id -> mtime of the turn you've looked at
+        "ack": {},              # session id -> the finished turn you've seen
         "first": True,
         "flash_until": 0.0,
         "drag": None,
@@ -1127,11 +1124,6 @@ def run_gui():
             state["expanded"] = True
         render()
 
-    def toggle_sound():
-        state["sound"] = not state["sound"]
-        cfg["sound"] = state["sound"]
-        save_config(cfg)
-
     def toggle_detached():
         state["show_detached"] = not state["show_detached"]
         cfg["show_detached"] = state["show_detached"]
@@ -1160,9 +1152,6 @@ def run_gui():
         menu.add_command(
             label=("✓ " if state["pinned"] else "   ") + "Keep expanded",
             command=toggle_pin)
-        menu.add_command(
-            label=("✓ " if state["sound"] else "   ") + "Chime when done",
-            command=toggle_sound)
         menu.add_command(
             label=("✓ " if state["show_detached"] else "   ")
                   + "Include detached background jobs",
@@ -1218,20 +1207,9 @@ def run_gui():
             acked = state["ack"].get(sid) == ack_key(sess)
             sess["ui"] = "seen" if (sess["state"] == "done" and acked) else sess["state"]
 
-            was = state["prev"].get(sid)
-            if (was and was != "done" and sess["state"] == "done"
-                    and not acked and state["sound"]):
-                # no chime if you were already watching it finish
-                try:
-                    winsound.MessageBeep(0x00000040)   # asterisk
-                except Exception:
-                    pass
-            state["prev"][sid] = sess["state"]
-
-        for d in (state["prev"], state["ack"]):
-            for sid in list(d):
-                if sid not in live:
-                    del d[sid]
+        for sid in list(state["ack"]):
+            if sid not in live:
+                del state["ack"][sid]
 
         sessions.sort(key=recency, reverse=True)
         state["sessions"] = sessions

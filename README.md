@@ -52,12 +52,13 @@ harmless — a second copy detects the first and exits.
 Violet and blue both mean busy; the split tells you *why*, which is the
 difference between "composing an answer" and "three minutes into a test run".
 
-Green is the only state that nags, and it clears as soon as you've actually
-looked — whether you clicked the row, used *Mark all as seen*, or just
+Green is the only state that nags, and it does so silently — it never makes a
+sound or raises a system notification. It clears as soon as you've actually
+looked, whether you clicked the row, used *Mark all as seen*, or just
 alt-tabbed to that window yourself. Focusing a window counts as reading it, so
-the widget never nags about something already on your screen (and won't chime
-for a session you watched finish). Sessions that finished before the monitor
-started come up grey, so launching it doesn't drown you in green.
+the widget never nags about something already on your screen. Sessions that
+finished before the monitor started come up grey, so launching it doesn't
+drown you in green.
 
 Rows are ordered by most recent activity, so whatever just moved is on top.
 
@@ -80,8 +81,8 @@ Rows are ordered by most recent activity, so whatever just moved is on top.
   it, so it won't fold away mid-drag.
 - **Ctrl + scroll wheel** — scale the whole thing, 70% to 250%. Also under
   right-click → *Size*, with presets and *Reset size*.
-- **Right-click** — keep expanded, chime on completion, include detached
-  background jobs, mark all seen, reset position, quit.
+- **Right-click** — keep expanded, include detached background jobs, mark all
+  seen, reset position, quit.
 
 Everything is remembered in `~/.claude-monitor.json`, and sizing stacks on top
 of your display's DPI scaling rather than replacing it.
