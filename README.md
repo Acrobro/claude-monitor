@@ -1,0 +1,135 @@
+# Claude Monitor
+
+A small always-on-top indicator for Windows that shows, at a glance, which of
+your Claude Code conversations are **working** and which are **done and waiting
+for you** — so you stop alt-tabbing between terminals to check.
+
+![states](docs/states.png)
+
+Collapsed it's a pill with one dot per session. Hover to expand the list, click
+a row to jump straight to that conversation's window.
+
+## Install
+
+Requires Windows and Python 3.8+ on your PATH. No packages to install —
+it uses only `tkinter` and `ctypes` from the standard library.
+
+```bash
+git clone https://github.com/Acrobro/claude-monitor.git
+cd claude-monitor
+powershell -ExecutionPolicy Bypass -File install.ps1 -Startup
+```
+
+No Git? Download the ZIP from the repo's green **Code** button, extract it,
+then right-click `install.ps1` → **Run with PowerShell**.
+
+That adds a **Claude Monitor** entry to the Start Menu (searchable, and
+right-click → pin to Start or taskbar). `-Startup` also launches it with
+Windows; drop the flag if you'd rather start it yourself. To uninstall:
+
+```bash
+powershell -ExecutionPolicy Bypass -File install.ps1 -Remove
+```
+
+You can also just double-click `Claude Monitor.vbs`. Launching twice is
+harmless — a second copy detects the first and exits.
+
+## Reading it
+
+| Colour | State | Meaning |
+| --- | --- | --- |
+| 🟢 green | **ready for you** | the turn ended and you haven't looked yet — the pill grows a green ring and pulses |
+| 🟣 violet | **thinking** | the model is generating; no tool running |
+| 🔵 blue | **working** | a tool is executing — the row names it ("running Bash") |
+| 🟡 amber | **may need input** | blocked on a tool for 3min+ with nothing to suggest it's still busy; possibly a permission prompt |
+| ⚫ grey | **done** | finished, and you've already seen it |
+
+Violet and blue both mean busy; the split tells you *why*, which is the
+difference between "composing an answer" and "three minutes into a test run".
+
+Green is the only state that nags. Click a row (or *Mark all as seen*) and it
+goes grey until that session works again. Sessions that finished before the
+monitor started come up grey, so launching it doesn't drown you in green.
+
+## Controls
+
+- **Hover** — expand the list. **Click a row** — raise that conversation's
+  window and mark it seen.
+- **×** in the panel header — quit.
+- **Drag** — move it; the position is remembered.
+- **Right-click** — keep expanded, chime on completion, include detached
+  background jobs, mark all seen, reset position, quit.
+
+Settings are stored in `~/.claude-monitor.json`.
+
+## Which sessions show up
+
+Only the ones you actually have open: the process must be alive **and** resolve
+to a real window. A CLI session owns no window of its own, so the monitor walks
+up the process tree to the terminal hosting it. Detached background jobs
+(`kind: "bg"`) have no window anywhere in their ancestry and are left out —
+enable *Include detached background jobs* if you want them.
+
+Windows Terminal is a single process hosting every terminal window, so windows
+are matched to sessions by title (Claude Code puts the conversation title in
+the terminal title). Without that, every session in Windows Terminal would
+focus the same window.
+
+## How it works
+
+Everything is read-only and local; nothing is sent anywhere. Claude Code keeps
+two things on disk that make this possible:
+
+**`~/.claude/sessions/<pid>.json`** — one file per running process, with the
+session id, cwd, kind, a friendly name, and (for CLI sessions) a live
+`status` of `busy` / `idle` / `shell`. Stale files linger after a process
+exits and pids get recycled, so a session counts only if the pid is alive
+*and* still a Claude process. An in-place update renames the running binary to
+`claude.exe.old.<ts>`, so that check is a prefix match.
+
+**`~/.claude/projects/<slug>/<session-id>.jsonl`** — the transcript. The
+monitor reads the last 256KB and walks backwards to the first decisive entry:
+
+| Last entry | State |
+| --- | --- |
+| `system` with `subtype: "turn_duration"` | done — written the instant a turn ends |
+| `assistant` with `stop_reason` other than `tool_use` | done |
+| `assistant` containing a `tool_use` block | working, on that tool |
+| `assistant` with text or thinking only | thinking |
+| `user` — a prompt, or a returning tool result | thinking |
+
+`stop_reason` is what makes this reliable across entrypoints: `turn_duration`
+is only written by the CLI, so desktop sessions would otherwise never register
+as finished. Where the registry publishes a `status`, it wins — `busy` means
+the session really is working however long it has been quiet, which is what
+keeps long-running tools from being mistaken for stalled ones.
+
+Ages come from the timestamp inside the last real event, not the file's mtime:
+transcripts get rewritten with metadata long after the last actual activity, so
+mtime can read as seconds old on a session that has been idle for hours.
+
+One process snapshot and one window enumeration per tick cover liveness,
+parentage and window ownership together, and transcript parses are cached on
+file mtime — so idling costs a handful of `stat` calls per second.
+
+## Debugging
+
+```bash
+python claude_monitor.py --probe
+```
+
+Prints what the monitor currently sees, as text, and exits. Add `--all` to
+include detached jobs.
+
+## Caveats
+
+- Windows only — it leans on Win32 APIs for window and process discovery.
+- Clicking a row raises the *window*, not the individual tab. Two sessions in
+  one Windows Terminal window, or the Claude desktop app's own tabs, can't be
+  singled out further.
+- The amber "may need input" state is a guess, not a signal Claude Code
+  publishes. Everything else is read directly.
+
+## License
+
+MIT
