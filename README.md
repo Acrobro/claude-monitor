@@ -36,8 +36,10 @@ Windows; drop the flag if you'd rather start it yourself. To uninstall:
 powershell -ExecutionPolicy Bypass -File install.ps1 -Remove
 ```
 
-You can also just double-click `Claude Monitor.vbs`. Launching twice is
-harmless — a second copy detects the first and exits.
+You can also just double-click `Claude Monitor.vbs`. Launching it again never
+starts a second copy — instead the one already running expands and flashes
+orange for a few seconds, which is how you find it if you've moved it
+somewhere and forgotten where.
 
 ## Reading it
 

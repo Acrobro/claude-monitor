@@ -30,6 +30,7 @@ HOME = os.path.expanduser("~")
 SESSIONS_DIR = os.path.join(HOME, ".claude", "sessions")
 PROJECTS_DIR = os.path.join(HOME, ".claude", "projects")
 CONFIG_PATH = os.path.join(HOME, ".claude-monitor.json")
+PING_PATH = os.path.join(HOME, ".claude-monitor.ping")
 
 POLL_MS = 1000          # how often we rescan
 DRAG_SLOP = 8           # px of movement before a click counts as a drag
@@ -240,7 +241,16 @@ def claim_single_instance():
     global _instance_lock
     k32.CreateMutexW.restype = wt.HANDLE
     _instance_lock = k32.CreateMutexW(None, False, "Local\\ClaudeCodeMonitor")
-    return ctypes.get_last_error() != 183       # ERROR_ALREADY_EXISTS
+    if ctypes.get_last_error() != 183:          # ERROR_ALREADY_EXISTS
+        return True
+    # Already up. Clicking the icon and having nothing happen looks broken -
+    # especially once the widget has been moved somewhere unexpected - so
+    # leave a note asking the live copy to show itself.
+    try:
+        open(PING_PATH, "w").close()
+    except OSError:
+        pass
+    return False
 
 
 def foreground_window():
@@ -661,7 +671,7 @@ def run_gui():
         "close_hit": None,
         "ack": {},              # session id -> the finished turn you've seen
         "first": True,
-        "flash_until": 0.0,
+        "reveal_until": 0.0,
         "drag": None,
         "resize": None,
         "moved": False,
@@ -768,9 +778,14 @@ def run_gui():
         h = HEAD_H + n * ROW_H + s(8)
         place(w, h)
 
+        revealing = time.time() < state["reveal_until"]
         round_rect(1, 1, w - 2, h - 2, s(11), fill=BG,
-                   outline=GREEN if any_done else BORDER,
-                   width=s(2) if any_done else 1)
+                   outline=ORANGE if revealing else (GREEN if any_done else BORDER),
+                   width=s(3) if revealing else (s(2) if any_done else 1))
+        if revealing and int(time.time() * 3) % 2 == 0:
+            # "here I am" pulse, for when you relaunch and can't spot it
+            round_rect(s(3), s(3), w - s(4), h - s(4), s(9),
+                       fill="", outline=ORANGE, width=s(2))
 
         draw_logo(s(18), HEAD_H / 2 + s(2), s(8), ORANGE)
         canvas.create_text(s(32), HEAD_H / 2 + s(2), anchor="w",
@@ -939,7 +954,7 @@ def run_gui():
         state["collapse_job"] = None
         # never fold up mid-drag, or while the pointer is still hovering nearby
         if (state["pinned"] or state["drag"] or state["resize"]
-                or pointer_near()):
+                or time.time() < state["reveal_until"] or pointer_near()):
             state["collapse_job"] = win.after(250, collapse_check)
             return
         state["expanded"] = False
@@ -1185,6 +1200,15 @@ def run_gui():
 
     # ---- poll ------------------------------------------------------------
     def tick():
+        # a second launch drops a file here rather than starting a rival copy
+        if os.path.exists(PING_PATH):
+            try:
+                os.remove(PING_PATH)
+            except OSError:
+                pass
+            state["reveal_until"] = time.time() + 4.0
+            state["expanded"] = True
+
         try:
             sessions = scan(include_detached=state["show_detached"])
         except Exception:
@@ -1220,6 +1244,10 @@ def run_gui():
 
     if state["pinned"]:
         state["expanded"] = True
+    try:
+        os.remove(PING_PATH)    # discard a note left over from an earlier run
+    except OSError:
+        pass
     place(s(96), PILL_H)
     tick()
     root.mainloop()

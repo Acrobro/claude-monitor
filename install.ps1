@@ -46,14 +46,11 @@ Install it from https://www.python.org/downloads/ and tick
     "found $($python.Source)"
 }
 
-# Borrow Claude's own icon when it's installed, so the entry is recognisable.
-$icon = "$env:SystemRoot\System32\wscript.exe,0"
-$app = Get-ChildItem (Join-Path $env:LOCALAPPDATA "AnthropicClaude") -Filter "app-*" -Directory -ErrorAction SilentlyContinue |
-       Sort-Object Name | Select-Object -Last 1
-if ($app) {
-    $exe = Join-Path $app.FullName "claude.exe"
-    if (Test-Path $exe) { $icon = "$exe,0" }
-}
+# Use the icon shipped with this repo. Borrowing one from an installed app is
+# tempting but those live in version-stamped folders that disappear on the next
+# update, leaving a blank tile behind.
+$icon = Join-Path $here "docs\claude-monitor.ico"
+if (-not (Test-Path $icon)) { $icon = "$env:SystemRoot\System32\wscript.exe,0" }
 
 $shell = New-Object -ComObject WScript.Shell
 function New-Link($path) {
