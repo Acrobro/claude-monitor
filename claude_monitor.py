@@ -675,6 +675,8 @@ def run_gui():
         "drag": None,
         "resize": None,
         "moved": False,
+        "press_expanded": False,
+        "last_release": None,
         "collapse_job": None,
         "row_hits": [],
         "w": s(96),
@@ -1058,6 +1060,9 @@ def run_gui():
             return
         state["drag"] = (e.x_root - state["left"], e.y_root - cfg["y"])
         state["moved"] = False
+        # grabbing the collapsed pill must never end in quitting, even though
+        # hovering expands it mid-drag and slides the quit button under you
+        state["press_expanded"] = state["expanded"]
 
     def on_drag(e):
         r = state["resize"]
@@ -1103,8 +1108,13 @@ def run_gui():
         win.geometry("%dx%d+%d+%d" % (state["w"], state["h"], nl, ny))
 
     def on_release(e):
+        if state["last_release"] == e.serial:
+            return                          # same event delivered twice
+        state["last_release"] = e.serial
+
         was_drag = state["moved"]
         resizing = state["resize"]
+        started_expanded = state["press_expanded"]
         state["drag"] = None
         state["resize"] = None
         state["moved"] = False
@@ -1115,7 +1125,7 @@ def run_gui():
             state["expanded"] = True
             render()
             return
-        if in_close(e):
+        if in_close(e) and started_expanded:
             root.destroy()
             return
         for y0, y1, sess in state["row_hits"]:
@@ -1188,15 +1198,17 @@ def run_gui():
         menu.add_command(label="   Quit", command=root.destroy)
         menu.tk_popup(e.x_root, e.y_root)
 
-    for widget in (win, canvas):
-        widget.bind("<Enter>", on_enter)
-        widget.bind("<Leave>", on_leave)
-        widget.bind("<Motion>", on_motion)
-        widget.bind("<ButtonPress-1>", on_press)
-        widget.bind("<B1-Motion>", on_drag)
-        widget.bind("<ButtonRelease-1>", on_release)
-        widget.bind("<Button-3>", on_menu)
-        widget.bind("<Control-MouseWheel>", on_wheel)
+    # Bind the canvas only. It fills the window, so binding both delivered
+    # every event twice - and the duplicate release, arriving after the first
+    # had cleared the drag flag, was read as a plain click.
+    canvas.bind("<Enter>", on_enter)
+    canvas.bind("<Leave>", on_leave)
+    canvas.bind("<Motion>", on_motion)
+    canvas.bind("<ButtonPress-1>", on_press)
+    canvas.bind("<B1-Motion>", on_drag)
+    canvas.bind("<ButtonRelease-1>", on_release)
+    canvas.bind("<Button-3>", on_menu)
+    canvas.bind("<Control-MouseWheel>", on_wheel)
 
     # ---- poll ------------------------------------------------------------
     def tick():
