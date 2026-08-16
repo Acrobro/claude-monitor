@@ -31,6 +31,7 @@ SESSIONS_DIR = os.path.join(HOME, ".claude", "sessions")
 PROJECTS_DIR = os.path.join(HOME, ".claude", "projects")
 CONFIG_PATH = os.path.join(HOME, ".claude-monitor.json")
 PING_PATH = os.path.join(HOME, ".claude-monitor.ping")
+LOG_PATH = os.path.join(HOME, ".claude-monitor.log")
 
 POLL_MS = 1000          # how often we rescan
 DRAG_SLOP = 8           # px of movement before a click counts as a drag
@@ -671,6 +672,7 @@ def run_gui():
         "close_hit": None,
         "ack": {},              # session id -> the finished turn you've seen
         "first": True,
+        "ticks": 0,
         "reveal_until": 0.0,
         "drag": None,
         "resize": None,
@@ -1211,15 +1213,65 @@ def run_gui():
     canvas.bind("<Control-MouseWheel>", on_wheel)
 
     # ---- poll ------------------------------------------------------------
+    def resurface():
+        """Force the window back onto the screen.
+
+        A layered, always-on-top window can stop being composited - after the
+        display sleeps, the resolution changes, or a session switch - while
+        still reporting itself visible, un-cloaked and at the front of the
+        z-order. Re-mapping it rebuilds the surface.
+        """
+        try:
+            win.withdraw()
+            win.deiconify()
+        except tk.TclError:
+            pass
+        try:
+            win.attributes("-topmost", True)
+            win.lift()
+        except tk.TclError:
+            pass
+
     def tick():
+        """Never let one bad frame kill the loop.
+
+        render() starts by clearing the canvas, so an exception part-way
+        through leaves the window empty - and an empty window is a fully
+        transparent one, invisible but still present. Always reschedule, and
+        leave a note behind explaining what went wrong.
+        """
+        try:
+            _tick()
+        except Exception:
+            import traceback
+            try:
+                with open(LOG_PATH, "a", encoding="utf-8") as fh:
+                    fh.write("%s\n%s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"),
+                                           traceback.format_exc()))
+            except OSError:
+                pass
+        finally:
+            win.after(POLL_MS, tick)
+
+    def _tick():
+        state["ticks"] += 1
+
         # a second launch drops a file here rather than starting a rival copy
         if os.path.exists(PING_PATH):
             try:
                 os.remove(PING_PATH)
             except OSError:
                 pass
+            # you clicked the icon because you couldn't find it, so make sure
+            # it really is on screen rather than merely claiming to be
+            resurface()
             state["reveal_until"] = time.time() + 4.0
             state["expanded"] = True
+        elif state["ticks"] % 15 == 0:
+            try:
+                win.attributes("-topmost", True)
+            except tk.TclError:
+                pass
 
         try:
             sessions = scan(include_detached=state["show_detached"])
@@ -1251,8 +1303,18 @@ def run_gui():
         state["sessions"] = sessions
         state["first"] = False
 
+        # Collapse whenever nothing justifies staying open. Depending solely
+        # on <Leave> meant a reveal could leave it expanded indefinitely if
+        # the pointer never visited it afterwards.
+        if (state["expanded"] and not state["pinned"]
+                and time.time() >= state["reveal_until"]
+                and not state["drag"] and not state["resize"]
+                and not pointer_near()):
+            state["expanded"] = False
+            state["hover_row"] = -1
+            state["hover_edge"] = None
+
         render()
-        win.after(POLL_MS, tick)
 
     if state["pinned"]:
         state["expanded"] = True

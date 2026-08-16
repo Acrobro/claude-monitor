@@ -152,6 +152,11 @@ python claude_monitor.py --probe
 Prints what the monitor currently sees, as text, and exits. Add `--all` to
 include detached jobs.
 
+If the widget ever goes missing, launch it again — that forces the running
+copy back onto the screen and flashes it orange. Any unexpected error is
+appended to `~/.claude-monitor.log`; the update loop survives it and keeps
+going rather than leaving a blank window behind.
+
 ## Caveats
 
 - Windows only — it leans on Win32 APIs for window and process discovery.
