@@ -38,6 +38,15 @@ DRAG_SLOP = 8           # px of movement before a click counts as a drag
 ZOOM_MIN, ZOOM_MAX = 0.7, 2.5
 WIDTH_MIN, WIDTH_MAX = 240, 620     # logical px, before DPI and zoom
 ROW_MIN, ROW_MAX = 34, 84
+# The desktop shell owns windows ("Program Manager", the tray) that are not
+# anybody's terminal. Walking into them is how a row ends up raising File
+# Explorer instead of a conversation.
+SHELL_EXES = {"explorer.exe", "services.exe", "wininit.exe", "winlogon.exe",
+              "userinit.exe", "dwm.exe", "sihost.exe"}
+SHELL_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd",
+                 "Windows.UI.Core.CoreWindow", "ApplicationManager_DesktopShellWindow"}
+MAX_IDLE_DEFAULT = 120      # minutes since real activity before a session drops off
+
 EDGE_GRIP = 10          # thickness of the drag-to-resize strips
 CORNER_GRIP = 20        # reach of the diagonal grips at each corner
 HOVER_MARGIN = 70       # stay open while the pointer is this close by
@@ -147,6 +156,10 @@ def top_level_windows_by_pid():
         n = u32.GetWindowTextLengthW(hwnd)
         if n == 0:
             return True
+        cls = ctypes.create_unicode_buffer(256)
+        u32.GetClassNameW(hwnd, cls, 256)
+        if cls.value in SHELL_CLASSES:
+            return True
         buf = ctypes.create_unicode_buffer(n + 1)
         u32.GetWindowTextW(hwnd, buf, n + 1)
         pid = wt.DWORD()
@@ -158,7 +171,7 @@ def top_level_windows_by_pid():
     return out
 
 
-def resolve_windows(pid, procs, wins):
+def resolve_windows(pid, procs, wins, kids=None):
     """Candidate windows hosting this Claude process, nearest ancestor first.
 
     A CLI session owns no window - the terminal that spawned it does - so we
@@ -168,9 +181,19 @@ def resolve_windows(pid, procs, wins):
     """
     cur = pid
     for _ in range(8):
+        info = procs.get(cur)
+        if not info:
+            return []
+        if info[1].lower() in SHELL_EXES:
+            return []           # reached the desktop: nothing is showing this
         if cur in wins:
             return wins[cur]
-        nxt = procs.get(cur, (0, ""))[0]
+        # A classic console window belongs to a conhost.exe *child*, not to an
+        # ancestor, so an upward-only walk misses it entirely.
+        for child, exe in (kids or {}).get(cur, ()):
+            if exe.lower().startswith("conhost") and child in wins:
+                return wins[child]
+        nxt = info[0]
         if not nxt or nxt == cur:
             return []
         cur = nxt
@@ -432,6 +455,9 @@ def scan(include_detached=False):
     now = time.time()
     procs = process_snapshot()
     wins = top_level_windows_by_pid()
+    kids = {}
+    for child, (parent, exe) in procs.items():
+        kids.setdefault(parent, []).append((child, exe))
     for name in files:
         if not name.endswith(".json"):
             continue
@@ -452,7 +478,7 @@ def scan(include_detached=False):
         if not info or not info[1].lower().startswith("claude.exe"):
             continue
 
-        cands = resolve_windows(pid, procs, wins)
+        cands = resolve_windows(pid, procs, wins, kids)
         if not cands and not include_detached:
             continue
 
@@ -572,7 +598,8 @@ def fmt_age(sec):
 # ---------------------------------------------------------------- config
 def load_config():
     cfg = {"rx": None, "y": 0, "pinned": False,
-           "show_detached": False, "zoom": 1.0, "panel_w": 330, "row_h": 46}
+           "show_detached": False, "zoom": 1.0, "panel_w": 330, "row_h": 46,
+           "max_idle_min": MAX_IDLE_DEFAULT}
     try:
         # utf-8-sig: tolerate a BOM, which several Windows editors (and
         # PowerShell's Set-Content) add. Without it the whole config is
@@ -597,9 +624,12 @@ def probe():
     rows = scan(include_detached="--all" in sys.argv)
     if not rows:
         print("no open Claude Code sessions found")
+    max_idle = load_config().get("max_idle_min", MAX_IDLE_DEFAULT) * 60
     for s in rows:
-        print("[%-8s] %-22s pid=%-6s %s" %
-              (s["state"], s["name"], s["pid"], s["folder"]))
+        stale = s["state"] == "done" and s["since"] > max_idle
+        print("[%-8s] %-22s pid=%-6s %s%s" %
+              (s["state"], s["name"], s["pid"], s["folder"],
+               "   (hidden: idle too long)" if stale else ""))
         print("           %s" % (s["title"] or "(untitled)"))
         print("           idle %s  tool=%s  window=%s  kind=%s" %
               (fmt_age(s["since"]), s["tool"],
@@ -671,7 +701,8 @@ def run_gui():
         "hover_edge": None,
         "close_hit": None,
         "ack": {},              # session id -> the finished turn you've seen
-        "first": True,
+        "known": set(),         # sessions we have already laid eyes on
+        "max_idle": max(1, int(cfg.get("max_idle_min", MAX_IDLE_DEFAULT))),
         "ticks": 0,
         "reveal_until": 0.0,
         "drag": None,
@@ -872,8 +903,9 @@ def run_gui():
             canvas.create_oval(s(12) - r, cy - r, s(12) + r, cy + r,
                                fill=colour, outline="")
 
+            mid = y + ROW_H / 2 - s(1)
             title = sess["title"] or sess["name"]
-            canvas.create_text(s(26), y + s(13), anchor="w",
+            canvas.create_text(s(26), mid - s(8), anchor="w",
                                text=fit(title, F_TITLE, w - s(38)),
                                fill=FG, font=F_TITLE)
 
@@ -883,14 +915,14 @@ def run_gui():
             if sess["kind"] == "bg":
                 tag = "bg · " + tag
             tag = fit(tag, F_SMALL, int(w * 0.34))
-            canvas.create_text(w - s(12), y + s(30), anchor="e",
+            canvas.create_text(w - s(12), mid + s(9), anchor="e",
                                text=tag, fill=FG_DIM, font=F_SMALL)
 
             label = STATE_LABEL.get(ui, ui)
             if ui == "working" and sess["tool"]:
                 label = "running %s" % sess["tool"]
             line = "%s · %s ago" % (label, fmt_age(sess["since"]))
-            canvas.create_text(s(26), y + s(30), anchor="w",
+            canvas.create_text(s(26), mid + s(9), anchor="w",
                                text=fit(line, F_SMALL,
                                         w - s(46) - measure(tag, F_SMALL)),
                                fill=colour if ui in ("done", "waiting") else FG_DIM,
@@ -1161,6 +1193,11 @@ def run_gui():
         render()
         save_config(cfg)
 
+    def set_max_idle(minutes):
+        state["max_idle"] = minutes
+        cfg["max_idle_min"] = minutes
+        save_config(cfg)
+
     def reset_size():
         cfg["panel_w"], cfg["row_h"], cfg["zoom"] = 330, 46, 1.0
         remetric()
@@ -1193,6 +1230,16 @@ def run_gui():
         size.add_separator()
         size.add_command(label="   Reset size", command=reset_size)
         menu.add_cascade(label="   Size", menu=size)
+
+        idle = tk.Menu(menu, tearoff=0, bg=BG, fg=FG,
+                       activebackground=ORANGE, activeforeground="#FFFFFF",
+                       borderwidth=0)
+        for label, minutes in (("30 minutes", 30), ("2 hours", 120),
+                               ("8 hours", 480), ("no limit", 10 ** 6)):
+            mark = "✓ " if state["max_idle"] == minutes else "   "
+            idle.add_command(label=mark + label,
+                             command=lambda m=minutes: set_max_idle(m))
+        menu.add_cascade(label="   Show sessions active within", menu=idle)
 
         menu.add_separator()
         menu.add_command(label="   Mark all as seen", command=ack_all)
@@ -1283,25 +1330,38 @@ def run_gui():
             state["ack"][sess["session_id"]] = ack_key(sess)
 
         live = set()
+        keep = []
+        max_idle = state["max_idle"] * 60
         for sess in sessions:
             sid = sess["session_id"]
             live.add(sid)
 
-            # anything that finished before the monitor started is already
-            # water under the bridge - don't launch into a wall of green
-            if state["first"] and sess["state"] == "done":
-                state["ack"][sid] = ack_key(sess)
+            # A turn that had already ended before this session first showed up
+            # is not news - whether the monitor just started, or you clicked an
+            # old conversation in the app and spun a process up for it.
+            if sid not in state["known"]:
+                state["known"].add(sid)
+                if sess["state"] == "done" and sess["since"] > 10:
+                    state["ack"][sid] = ack_key(sess)
 
             acked = state["ack"].get(sid) == ack_key(sess)
             sess["ui"] = "seen" if (sess["state"] == "done" and acked) else sess["state"]
 
+            # Opening a conversation leaves its process running, so "has a live
+            # process" grows without bound as you browse. What you are actually
+            # working with is what has done something recently - or what is
+            # busy, or finished and still unread.
+            if sess["ui"] != "seen" or sess["since"] <= max_idle:
+                keep.append(sess)
+
+        sessions = keep
+        state["known"] &= live
         for sid in list(state["ack"]):
             if sid not in live:
                 del state["ack"][sid]
 
         sessions.sort(key=recency, reverse=True)
         state["sessions"] = sessions
-        state["first"] = False
 
         # Collapse whenever nothing justifies staying open. Depending solely
         # on <Leave> meant a reveal could leave it expanded indefinitely if

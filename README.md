@@ -91,11 +91,26 @@ of your display's DPI scaling rather than replacing it.
 
 ## Which sessions show up
 
-Only the ones you actually have open: the process must be alive **and** resolve
+Only the ones you are actually working with. Two things have to hold.
+
+**It has to be on screen somewhere.** The process must be alive *and* resolve
 to a real window. A CLI session owns no window of its own, so the monitor walks
-up the process tree to the terminal hosting it. Detached background jobs
-(`kind: "bg"`) have no window anywhere in their ancestry and are left out —
-enable *Include detached background jobs* if you want them.
+up the process tree to the terminal hosting it — stopping at the desktop shell,
+because `explorer.exe` owns the "Program Manager" window and attributing a
+session to it makes the row raise File Explorer instead of a conversation. It
+also checks `conhost.exe` children, since a classic console window belongs to a
+child of the shell process rather than an ancestor. A session whose terminal has
+been closed resolves to nothing and drops off; so do detached background jobs
+(`kind: "bg"`) — enable *Include detached background jobs* if you want them.
+
+**It has to have done something lately.** Opening a conversation in the desktop
+app starts a process for it that stays running, so "has a live process" grows
+without bound as you browse old chats. A session is listed while it is busy, or
+finished and still unread, or last active within the cut-off — two hours by
+default, changeable under right-click → *Show sessions active within*. Clicking
+through old conversations therefore doesn't accumulate rows, and a chat whose
+last turn ended days ago is never treated as unread news just because you
+happened to open it.
 
 Windows Terminal is a single process hosting every terminal window, so windows
 are matched to sessions by title (Claude Code puts the conversation title in
