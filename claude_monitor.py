@@ -46,6 +46,7 @@ SHELL_EXES = {"explorer.exe", "services.exe", "wininit.exe", "winlogon.exe",
 SHELL_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd",
                  "Windows.UI.Core.CoreWindow", "ApplicationManager_DesktopShellWindow"}
 MAX_IDLE_DEFAULT = 120      # minutes since real activity before a session drops off
+ATTENTION_MAX = 12 * 3600   # how long something unread or blocked keeps its place
 
 EDGE_GRIP = 10          # thickness of the drag-to-resize strips
 CORNER_GRIP = 20        # reach of the diagonal grips at each corner
@@ -210,19 +211,24 @@ def _norm(text):
 
 
 def window_score(item, title):
-    """How strongly a window title identifies this session."""
+    """How strongly a window title identifies this session.
+
+    Claude Code writes the session's name into the terminal title, so an
+    exact match is decisive; containment is a weak hint at best.
+    """
     t = _norm(title)
     if not t:
         return 0
-    for cand, pts in ((item["title"], 4), (item["name"], 2)):
-        c = _norm(str(cand or ""))
+    best = 0
+    for label in item.get("labels") or (item.get("title"), item.get("name")):
+        c = _norm(str(label or ""))
         if not c:
             continue
         if t == c:
-            return pts
-        if c in t or t in c:
-            return pts - 1
-    return 0
+            return 4
+        if len(c) >= 4 and (c in t or t in c):
+            best = 1
+    return best
 
 
 def assign_windows(items):
@@ -245,15 +251,22 @@ def assign_windows(items):
         chosen[i] = hwnd
         used.add(hwnd)
 
+    own = set(chosen)
     for i, item in enumerate(items):
         if i not in chosen:
             spare = [h for h, _ in item["_cands"] if h not in used]
             if spare:
                 chosen[i] = spare[0]
                 used.add(spare[0])
+                own.add(i)
             elif item["_cands"]:
+                # every window it could be in is showing something else, so
+                # it is at best a background tab - clickable, not on screen
                 chosen[i] = item["_cands"][0][0]
         item["hwnd"] = chosen.get(i)
+        # the desktop app shows every conversation in one shared window, so
+        # owning it says nothing about which one is open
+        item["own_window"] = i in own and item["entrypoint"] != "claude-desktop"
         del item["_cands"]
 
 
@@ -343,6 +356,7 @@ def parse_transcript(path):
     """Walk the tail backwards and work out what this conversation is doing."""
     result = {
         "state": None, "title": None, "prompt": None,
+        "custom_title": None, "agent_name": None,
         "permission_mode": None, "tool": None, "last_ts": None,
         "turn_ms": None,
     }
@@ -363,6 +377,10 @@ def parse_transcript(path):
             t = o.get("type")
             if t == "ai-title" and o.get("aiTitle"):
                 result["title"] = o["aiTitle"]
+            elif t == "custom-title" and o.get("customTitle"):
+                result["custom_title"] = o["customTitle"]
+            elif t == "agent-name" and o.get("agentName"):
+                result["agent_name"] = o["agentName"]
             elif t == "last-prompt" and o.get("lastPrompt"):
                 result["prompt"] = o["lastPrompt"]
             elif t == "permission-mode":
@@ -479,8 +497,6 @@ def scan(include_detached=False):
             continue
 
         cands = resolve_windows(pid, procs, wins, kids)
-        if not cands and not include_detached:
-            continue
 
         cwd = reg.get("cwd") or ""
         item = {
@@ -491,6 +507,7 @@ def scan(include_detached=False):
             "cwd": cwd,
             "folder": os.path.basename(cwd.rstrip("\\/")) or cwd,
             "name": reg.get("name") or sid[:8],
+            "name_source": reg.get("nameSource"),
             "kind": reg.get("kind") or "interactive",
             "entrypoint": reg.get("entrypoint") or "",
             # CLI sessions publish busy/idle/shell here; desktop ones omit it
@@ -511,7 +528,10 @@ def scan(include_detached=False):
         if got:
             parsed, mtime = got
             item.update({k: parsed[k] for k in
-                         ("title", "prompt", "tool", "turn_ms", "permission_mode")})
+                         ("prompt", "tool", "turn_ms", "permission_mode")})
+            item["ai_title"] = parsed["title"]
+            item["custom_title"] = parsed["custom_title"]
+            item["agent_name"] = parsed["agent_name"]
             if parsed["state"]:
                 item["state"] = parsed["state"]
             # age off the event's own timestamp, not the file's mtime - the
@@ -528,6 +548,12 @@ def scan(include_detached=False):
             if item["status"] == "idle" and item["state"] in ("thinking", "working"):
                 item["state"] = "done"
 
+            # "waiting" is published when the session is blocked on you - a
+            # question or a permission prompt - which is exactly what amber
+            # was guessing at
+            elif item["status"] == "waiting" and item["state"] in ("thinking", "working"):
+                item["state"] = "waiting"
+
             # a long silence *while blocked on a tool* can mean a permission
             # prompt is sitting there. Only guess that when nothing contradicts
             # it: not while the registry says busy, and never in a mode where
@@ -537,6 +563,27 @@ def scan(include_detached=False):
                     and item["permission_mode"] != "bypassPermissions"
                     and item["since"] > WAITING_AFTER):
                 item["state"] = "waiting"
+        # The name to show: one you chose beats an AI summary. The registry
+        # holds renames (and the desktop app's titles); "derived" names are
+        # just the folder plus a counter and only a last resort.
+        chosen_name = item["name"] if item["name_source"] != "derived" else None
+        item["title"] = (chosen_name or item.get("custom_title")
+                         or item.get("agent_name") or item.get("ai_title")
+                         or item["name"])
+        item["labels"] = [x for x in (item["name"], item.get("custom_title"),
+                                      item.get("agent_name"), item.get("ai_title"))
+                          if x]
+
+        # A background session (run by the daemon, viewed through `claude
+        # attach` or a lane switch) has no window in its own process tree,
+        # but the terminal showing it carries its name in the title.
+        if not cands:
+            names = {_norm(x) for x in item["labels"]}
+            cands = [(h, t) for lst in wins.values() for h, t in lst
+                     if _norm(t) in names]
+        if not cands and not include_detached:
+            continue
+        item["_cands"] = cands
         out.append(item)
 
     assign_windows(out)
@@ -567,6 +614,24 @@ def looking_at(sessions, fg=None, title=None):
     title = window_title(fg) if title is None else title
     ranked = sorted(here, key=lambda s: window_score(s, title), reverse=True)
     return ranked[:1] if window_score(ranked[0], title) > 0 else []
+
+
+def listed(sess, max_idle):
+    """Does this session belong in the list - is it one you're working with?
+
+    A terminal showing it is proof enough, however long it has sat idle. The
+    desktop app is the hard case: every conversation you click spins up a
+    process and they all share one window, so there recent activity has to
+    stand in for "open".
+    """
+    ui, since = sess["ui"], sess["since"]
+    if sess.get("own_window"):
+        return True
+    if ui in ("thinking", "working"):
+        return sess.get("status") == "busy" or since <= ATTENTION_MAX
+    if ui in ("done", "waiting"):
+        return since <= ATTENTION_MAX
+    return since <= max_idle
 
 
 def ack_key(sess):
@@ -621,15 +686,21 @@ def save_config(cfg):
 
 # ---------------------------------------------------------------- probe mode
 def probe():
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
     rows = scan(include_detached="--all" in sys.argv)
     if not rows:
         print("no open Claude Code sessions found")
     max_idle = load_config().get("max_idle_min", MAX_IDLE_DEFAULT) * 60
     for s in rows:
-        stale = s["state"] == "done" and s["since"] > max_idle
-        print("[%-8s] %-22s pid=%-6s %s%s" %
-              (s["state"], s["name"], s["pid"], s["folder"],
-               "   (hidden: idle too long)" if stale else ""))
+        s["ui"] = "seen" if s["state"] == "done" else s["state"]
+        shown = listed(s, max_idle)
+        print("[%-8s] %-30s pid=%-6s %-10s %s%s" %
+              (s["state"], s["title"], s["pid"], s["folder"],
+               "own window" if s.get("own_window") else "",
+               "" if shown else "   (not listed)"))
         print("           %s" % (s["title"] or "(untitled)"))
         print("           idle %s  tool=%s  window=%s  kind=%s" %
               (fmt_age(s["since"]), s["tool"],
@@ -1351,7 +1422,7 @@ def run_gui():
             # process" grows without bound as you browse. What you are actually
             # working with is what has done something recently - or what is
             # busy, or finished and still unread.
-            if sess["ui"] != "seen" or sess["since"] <= max_idle:
+            if listed(sess, max_idle):
                 keep.append(sess)
 
         sessions = keep

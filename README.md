@@ -100,17 +100,31 @@ because `explorer.exe` owns the "Program Manager" window and attributing a
 session to it makes the row raise File Explorer instead of a conversation. It
 also checks `conhost.exe` children, since a classic console window belongs to a
 child of the shell process rather than an ancestor. A session whose terminal has
-been closed resolves to nothing and drops off; so do detached background jobs
-(`kind: "bg"`) — enable *Include detached background jobs* if you want them.
+been closed resolves to nothing and drops off.
 
-**It has to have done something lately.** Opening a conversation in the desktop
-app starts a process for it that stays running, so "has a live process" grows
-without bound as you browse old chats. A session is listed while it is busy, or
-finished and still unread, or last active within the cut-off — two hours by
-default, changeable under right-click → *Show sessions active within*. Clicking
-through old conversations therefore doesn't accumulate rows, and a chat whose
-last turn ended days ago is never treated as unread news just because you
-happened to open it.
+Background sessions (`kind: "bg"`, run by the Claude daemon and viewed with
+`claude attach` or a lane switch) have no window anywhere in their own process
+tree — but the terminal showing one carries its name in the title, so they are
+found by that instead. Jobs nobody is viewing stay out unless you enable
+*Include detached background jobs*.
+
+**A terminal of its own is proof enough.** If a session is the one a terminal
+window is showing, it's listed however long it has sat idle. The desktop app is
+the hard case: every conversation you click starts a process that stays
+running, and they all share one window, so there recent activity has to stand
+in for "open". An app conversation is listed while it's busy, while it's
+unread or waiting on you (for up to 12 hours), or if it was active within the
+cut-off — two hours by default, under right-click → *Show sessions active
+within*. Clicking through old chats therefore doesn't pile up rows, and a chat
+whose last turn ended days ago never arrives looking like fresh news.
+
+A terminal tab that's switched over to view a different lane counts as showing
+that lane, not the session that owns the tab.
+
+Rows use the name you gave the session — a rename shows up within a second —
+falling back to a custom title, then the AI-generated summary. Sessions that
+publish `status: waiting` (blocked on a question or a permission prompt) show
+amber straight away rather than after a timeout.
 
 Windows Terminal is a single process hosting every terminal window, so windows
 are matched to sessions by title (Claude Code puts the conversation title in
