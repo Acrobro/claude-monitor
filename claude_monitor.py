@@ -573,6 +573,12 @@ def scan(include_detached=False):
         item["labels"] = [x for x in (item["name"], item.get("custom_title"),
                                       item.get("agent_name"), item.get("ai_title"))
                           if x]
+        # The desktop app runs each /btw side question as a session of its own,
+        # retitled "btw: <question>". It's an aside, not a conversation to keep
+        # an eye on, and its process outlives the answer.
+        item["side"] = any(str(x).strip().lower().startswith("btw:")
+                           for x in (item["name"], item.get("custom_title"),
+                                     item.get("agent_name")) if x)
 
         # A background session (run by the daemon, viewed through `claude
         # attach` or a lane switch) has no window in its own process tree,
@@ -625,8 +631,12 @@ def listed(sess, max_idle):
     stand in for "open".
     """
     ui, since = sess["ui"], sess["since"]
+    if sess.get("side"):
+        return ui in ("thinking", "working")    # only while it's answering
     if sess.get("own_window"):
         return True
+    if ui == "starting":
+        return False        # an app chat with no messages yet - nothing to watch
     if ui in ("thinking", "working"):
         return sess.get("status") == "busy" or since <= ATTENTION_MAX
     if ui in ("done", "waiting"):

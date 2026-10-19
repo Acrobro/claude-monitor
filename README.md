@@ -118,6 +118,11 @@ cut-off — two hours by default, under right-click → *Show sessions active
 within*. Clicking through old chats therefore doesn't pile up rows, and a chat
 whose last turn ended days ago never arrives looking like fresh news.
 
+`/btw` side questions are left out. The desktop app runs each one as a session
+of its own, retitled `btw: <question>`, whose process outlives the answer, so
+they are only listed while they're actually answering. App chats with no
+messages yet are left out too — there's nothing to watch until you send one.
+
 A terminal tab that's switched over to view a different lane counts as showing
 that lane, not the session that owns the tab.
 
